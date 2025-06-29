@@ -142,6 +142,16 @@ outputs."
   :type 'boolean
   :group 'claude-code)
 
+(defcustom claude-code-optimize-scrolling t
+  "When non-nil, optimize scrolling behavior to prevent long scroll animations.
+
+This setting helps avoid the issue where Eat terminal scrolls from the
+top to bottom when the buffer is large, which can take a long time and
+cause visual disruption.  The optimization uses `set-window-start'
+instead of `recenter' and throttles scroll synchronization events."
+  :type 'boolean
+  :group 'claude-code)
+
 ;; Forward declare variables to avoid compilation warnings
 (defvar eat-terminal)
 (defvar eat-term-name)
@@ -500,25 +510,43 @@ possible, preventing the scrolling up issue when editing other buffers."
           ;; Check if we should keep the prompt at the bottom
           (when (and (>= cursor-pos (- (point-max) 2))
                      (not (pos-visible-in-window-p cursor-pos window)))
-            ;; Recenter with point at bottom of window
-            (with-selected-window window
-              (save-excursion
-                (goto-char cursor-pos)
-                (recenter -1))))
+            (if claude-code-optimize-scrolling
+                ;; Use set-window-start to avoid scrolling animation
+                (let ((window-height (window-height window)))
+                  (set-window-start window
+                                   (max term-beginning
+                                        (save-excursion
+                                          (goto-char cursor-pos)
+                                          (forward-line (- window-height 2))
+                                          (line-beginning-position)))))
+              ;; Original behavior with recenter
+              (with-selected-window window
+                (save-excursion
+                  (goto-char cursor-pos)
+                  (recenter -1)))))
           ;; Otherwise, only adjust window-start if cursor is not visible
           (unless (pos-visible-in-window-p cursor-pos window)
             (set-window-start window term-beginning)))))))
+
+(defvar claude-code--last-sync-time (make-hash-table :test 'eq :weakness 'key)
+  "Hash table storing last synchronization time for each Claude buffer.")
 
 (defun claude-code--on-window-configuration-change ()
   "Handle window configuration change for Claude buffers.
 
 Ensure all Claude buffers stay scrolled to the bottom when window
-configuration changes (e.g., when minibuffer opens/closes)."
-  (dolist (claude-buffer (claude-code--find-all-claude-buffers))
-    (with-current-buffer claude-buffer
-      ;; Get all windows showing this Claude buffer
-      (when-let ((windows (get-buffer-window-list claude-buffer nil t)))
-        (claude-code--synchronize-scroll windows)))))
+configuration changes, but with throttling to prevent excessive scrolling."
+  (when claude-code-optimize-scrolling
+    (let ((current-time (float-time)))
+      (dolist (claude-buffer (claude-code--find-all-claude-buffers))
+        (with-current-buffer claude-buffer
+          ;; Only sync if enough time has passed since last sync (throttle to 0.1s)
+          (let ((last-sync (gethash claude-buffer claude-code--last-sync-time 0)))
+            (when (> (- current-time last-sync) 0.1)
+              (puthash claude-buffer current-time claude-code--last-sync-time)
+              ;; Get all windows showing this Claude buffer
+              (when-let ((windows (get-buffer-window-list claude-buffer nil t)))
+                (claude-code--synchronize-scroll windows)))))))))
 
 (defvar claude-code--window-widths (make-hash-table :test 'eq :weakness 'key)
   "Hash table mapping windows to their last known widths.")
