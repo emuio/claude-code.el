@@ -76,6 +76,14 @@ These are passed as SWITCHES parameters to `eat-make`."
   :type '(repeat string)
   :group 'claude-code)
 
+(defcustom claude-code-yolo-switches '("--dangerously-skip-permissions")
+  "List of command line switches for YOLO mode (dangerous permissions skip).
+These switches are used when starting Claude in YOLO mode, which bypasses
+permission checks.  Use with caution as this may allow Claude to perform
+potentially dangerous operations without confirmation."
+  :type '(repeat string)
+  :group 'claude-code)
+
 (defcustom claude-code-read-only-mode-cursor-type '(box nil nil)
   "Type of cursor to use as invisible cursor in Claude Code terminal buffer.
 
@@ -196,6 +204,7 @@ for each directory across multiple invocations.")
     (define-key map "1" 'claude-code-send-1)
     (define-key map "2" 'claude-code-send-2)
     (define-key map "3" 'claude-code-send-3)
+    (define-key map "Y" 'claude-code-yolo)
     (define-key map [tab] 'claude-code-cycle-mode)
     map)
   "Keymap for Claude commands.")
@@ -206,6 +215,7 @@ for each directory across multiple invocations.")
   "Claude command menu."
   ["Claude Commands"
    ["Manage Claude" ("c" "Start Claude" claude-code)
+    ("Y" "Start Claude YOLO (skip permissions)" claude-code-yolo)
     ("t" "Toggle claude window" claude-code-toggle)
     ("b" "Switch to Claude buffer" claude-code-switch-to-buffer)
     ("k" "Kill Claude" claude-code-kill)
@@ -638,6 +648,102 @@ With triple prefix ARG (\\[universal-argument] \\[universal-argument] \\[univers
           (error
            (error "error starting claude")
            (signal 'claude-start-error "error starting claude"))))
+
+      ;; Set eat repl faces to inherit from claude-code-repl-face
+      (claude-code--setup-repl-faces)
+
+      ;; Add advice to only nottify claude on window width changes, to avoid uncessary flickering
+      (advice-add 'eat--adjust-process-window-size :around #'claude-code--eat-adjust-process-window-size-advice)
+
+      ;; Set our custom synchronize scroll function
+      (setq-local eat--synchronize-scroll-function #'claude-code--synchronize-scroll)
+
+      ;; Add window configuration change hook to keep buffer scrolled to bottom
+      (add-hook 'window-configuration-change-hook #'claude-code--on-window-configuration-change nil t)
+
+      ;; fix wonky initial terminal layout that happens sometimes if we show the buffer before claude is ready
+      (sleep-for claude-code-startup-delay)
+
+      ;; Add cleanup hook to remove directory mappings when buffer is killed
+      (add-hook 'kill-buffer-hook #'claude-code--cleanup-directory-mapping nil t)
+
+      ;; run start hooks and show the claude buffer
+      (run-hooks 'claude-code-start-hook)
+      (display-buffer buffer))
+    (when switch-after
+      (switch-to-buffer buffer))))
+
+;;;###autoload
+(defun claude-code-yolo (&optional arg)
+  "Start Claude in YOLO mode (dangerously skip permissions) in an eat terminal.
+
+This function is similar to `claude-code' but starts Claude with the
+--dangerously-skip-permissions flag, which bypasses permission checks.
+Use with caution as this may allow Claude to perform potentially
+dangerous operations without confirmation.
+
+If current buffer belongs to a project start Claude in the project's
+root directory. Otherwise start in the directory of the current buffer
+file, or the current value of `default-directory' if no project and no
+buffer file.
+
+With single prefix ARG (\\[universal-argument]), switch to buffer after creating.
+With double prefix ARG (\\[universal-argument] \\[universal-argument]), continue previous conversation.
+With triple prefix ARG (\\[universal-argument] \\[universal-argument] \\[universal-argument]), prompt for the project directory."
+  (interactive "P")
+
+  ;; Forward declare variables to avoid compilation warnings
+  (require 'eat)
+
+  (let* ((dir (if (equal arg '(64))  ; Triple prefix
+                  (read-directory-name "Project directory: ")
+                (claude-code--directory)))
+         (abbreviated-dir (abbreviate-file-name dir))
+         (continue (equal arg '(16))) ; Double prefix
+         (switch-after (equal arg '(4))) ; Single prefix
+         (default-directory dir)
+         ;; Check for existing Claude instances in this directory
+         (existing-buffers (claude-code--find-claude-buffers-for-directory dir))
+         ;; Determine instance name with yolo suffix
+         (base-instance-name (if existing-buffers
+                                 (read-string (format "Instances already running for %s, new YOLO instance name (existing: %s): "
+                                                      abbreviated-dir
+                                                      (mapconcat (lambda (buf)
+                                                                   (or (claude-code--extract-instance-name-from-buffer-name
+                                                                        (buffer-name buf))
+                                                                       "default"))
+                                                                 existing-buffers ", ")))
+                               "yolo"))
+         (instance-name (if (string-match-p "yolo" base-instance-name)
+                            base-instance-name
+                          (concat base-instance-name "-yolo")))
+         (buffer-name (claude-code--buffer-name instance-name))
+         (trimmed-buffer-name (string-trim-right (string-trim buffer-name "\\*") "\\*"))
+         (buffer (get-buffer-create buffer-name))
+         ;; Use yolo switches instead of regular switches
+         (program-switches (if continue
+                               (append claude-code-yolo-switches '("--continue"))
+                             claude-code-yolo-switches)))
+    ;; Start the eat process
+    (with-current-buffer buffer
+      (cd dir)
+      (setq-local eat-term-name claude-code-term-name)
+
+      ;; Turn off shell integration, as we don't need it for Claude
+      (setq-local eat-enable-directory-tracking t
+                  eat-enable-shell-command-history nil
+                  eat-enable-shell-prompt-annotation nil)
+      
+      ;; Conditionally disable scrollback truncation
+      (when claude-code-never-truncate-claude-buffer
+        (setq-local eat-term-scrollback-size nil))
+
+      (let ((process-adaptive-read-buffering nil))
+        (condition-case nil
+            (apply #'eat-make trimmed-buffer-name claude-code-program nil program-switches)
+          (error
+           (error "error starting claude yolo")
+           (signal 'claude-start-error "error starting claude yolo"))))
 
       ;; Set eat repl faces to inherit from claude-code-repl-face
       (claude-code--setup-repl-faces)
