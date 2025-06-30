@@ -195,29 +195,31 @@ for each directory across multiple invocations.")
 
 ;;;; Key bindings
 ;;;###autoload (autoload 'claude-code-command-map "claude-code")
-(defvar claude-code-command-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map "/" 'claude-code-slash-commands)
-    (define-key map "b" 'claude-code-switch-to-buffer)
-    (define-key map "c" 'claude-code)
-    (define-key map "e" 'claude-code-fix-error-at-point)
-    (define-key map "k" 'claude-code-kill)
-    (define-key map "m" 'claude-code-transient)
-    (define-key map "n" 'claude-code-send-escape)
-    (define-key map "f" 'claude-code-fork)
-    (define-key map "r" 'claude-code-send-region)
-    (define-key map "s" 'claude-code-send-command)
-    (define-key map "t" 'claude-code-toggle)
-    (define-key map "x" 'claude-code-send-command-with-context)
-    (define-key map "y" 'claude-code-send-return)
-    (define-key map "z" 'claude-code-toggle-read-only-mode)
-    (define-key map "1" 'claude-code-send-1)
-    (define-key map "2" 'claude-code-send-2)
-    (define-key map "3" 'claude-code-send-3)
-    (define-key map "u" 'claude-code-yolo)
-    (define-key map [tab] 'claude-code-cycle-mode)
-    map)
+(defvar claude-code-command-map nil
   "Keymap for Claude commands.")
+
+(unless claude-code-command-map
+  (setq claude-code-command-map (make-sparse-keymap))
+  (define-key claude-code-command-map "/" 'claude-code-slash-commands)
+  (define-key claude-code-command-map "b" 'claude-code-switch-to-buffer)
+  (define-key claude-code-command-map "c" 'claude-code)
+  (define-key claude-code-command-map "e" 'claude-code-fix-error-at-point)
+  (define-key claude-code-command-map "k" 'claude-code-kill)
+  (define-key claude-code-command-map "m" 'claude-code-transient)
+  (define-key claude-code-command-map "n" 'claude-code-send-escape)
+  (define-key claude-code-command-map "f" 'claude-code-fork)
+  (define-key claude-code-command-map "r" 'claude-code-send-region)
+  (define-key claude-code-command-map "s" 'claude-code-send-command)
+  (define-key claude-code-command-map "t" 'claude-code-toggle)
+  (define-key claude-code-command-map "x" 'claude-code-send-command-with-context)
+  (define-key claude-code-command-map "y" 'claude-code-send-return)
+  (define-key claude-code-command-map "z" 'claude-code-toggle-read-only-mode)
+  (define-key claude-code-command-map "1" 'claude-code-send-1)  
+  (define-key claude-code-command-map "2" 'claude-code-send-2)
+  (define-key claude-code-command-map "3" 'claude-code-send-3)
+  (define-key claude-code-command-map "u" 'claude-code-yolo)
+  (define-key claude-code-command-map "d" 'claude-code-dashboard)
+  (define-key claude-code-command-map [tab] 'claude-code-cycle-mode))
 
 ;;;; Transient Menus
 ;;;###autoload (autoload 'claude-code-transient "claude-code" nil t)
@@ -228,6 +230,7 @@ for each directory across multiple invocations.")
     ("u" "Start Claude YOLO (skip permissions)" claude-code-yolo)
     ("t" "Toggle claude window" claude-code-toggle)
     ("b" "Switch to Claude buffer" claude-code-switch-to-buffer)
+    ("d" "Claude Dashboard" claude-code-dashboard)
     ("k" "Kill Claude" claude-code-kill)
     ("z" "Toggle read-only mode" claude-code-toggle-read-only-mode)]
    ["Send Commands to Claude" ("s" "Send command" claude-code-send-command)
@@ -885,19 +888,35 @@ With prefix ARG, show all Claude instances across all directories."
          ((null all-buffers)
           (claude-code--show-not-running-message))
          ((= (length all-buffers) 1)
-          ;; Only one buffer, just switch to it
-          (switch-to-buffer (car all-buffers)))
+          ;; Only one buffer, replace existing Claude window or switch to it
+          (claude-code--switch-to-claude-buffer (car all-buffers)))
          (t
           ;; Multiple buffers, let user choose
           (let ((selected-buffer (claude-code--select-buffer-from-choices
                                   "Select Claude instance: "
                                   all-buffers)))
             (when selected-buffer
-              (switch-to-buffer selected-buffer))))))
+              (claude-code--switch-to-claude-buffer selected-buffer))))))
     ;; Without prefix arg, use normal behavior
     (if-let ((claude-code-buffer (claude-code--get-or-prompt-for-buffer)))
-        (switch-to-buffer claude-code-buffer)
+        (claude-code--switch-to-claude-buffer claude-code-buffer)
       (claude-code--show-not-running-message))))
+
+(defun claude-code--switch-to-claude-buffer (buffer)
+  "Switch to BUFFER intelligently.
+
+If there's an existing Claude window, replace its buffer.
+Otherwise, use normal buffer switching behavior."
+  (let ((claude-windows (cl-remove-if-not 
+                         (lambda (window)
+                           (let ((buf (window-buffer window)))
+                             (and buf (string-match-p "^\\*claude:" (buffer-name buf)))))
+                         (window-list))))
+    (if claude-windows
+        ;; Replace the content of the first Claude window found
+        (set-window-buffer (car claude-windows) buffer)
+      ;; No Claude windows visible, use normal switching
+      (switch-to-buffer buffer))))
 
 ;;;###autoload
 (defun claude-code-kill (&optional arg)
@@ -1094,6 +1113,127 @@ enter Claude commands."
             (claude-code-read-only-mode)
           (claude-code-exit-read-only-mode)))
     (claude-code--show-not-running-message)))
+
+;;;; Claude Dashboard
+(defvar claude-code-dashboard-buffer-name "*Claude Dashboard*"
+  "Name of the Claude dashboard buffer.")
+
+(defvar claude-code-dashboard-mode-map nil
+  "Keymap for Claude dashboard mode.")
+
+(unless claude-code-dashboard-mode-map
+  (setq claude-code-dashboard-mode-map (make-sparse-keymap))
+  (define-key claude-code-dashboard-mode-map (kbd "RET") 'claude-code-dashboard-select)
+  (define-key claude-code-dashboard-mode-map (kbd "TAB") 'claude-code-dashboard-preview)
+  (define-key claude-code-dashboard-mode-map (kbd "q") 'claude-code-dashboard-quit)
+  (define-key claude-code-dashboard-mode-map (kbd "r") 'claude-code-dashboard-refresh)
+  (define-key claude-code-dashboard-mode-map (kbd "k") 'claude-code-dashboard-kill-instance)
+  (define-key claude-code-dashboard-mode-map (kbd "n") 'next-line)
+  (define-key claude-code-dashboard-mode-map (kbd "p") 'previous-line)
+  (define-key claude-code-dashboard-mode-map (kbd "j") 'next-line)
+  (define-key claude-code-dashboard-mode-map (kbd "K") 'previous-line)  ; Use K for up since k is kill
+  (define-key claude-code-dashboard-mode-map (kbd "C-n") 'next-line)
+  (define-key claude-code-dashboard-mode-map (kbd "C-p") 'previous-line))
+
+(define-derived-mode claude-code-dashboard-mode fundamental-mode "Claude Dashboard"
+  "Major mode for managing Claude instances.
+
+\\{claude-code-dashboard-mode-map}"
+  (setq buffer-read-only t)
+  (setq truncate-lines t)
+  (setq-local cursor-type 'box)
+  (use-local-map claude-code-dashboard-mode-map))
+
+(defun claude-code-dashboard-get-buffer-at-point ()
+  "Get the Claude buffer at current line."
+  (get-text-property (line-beginning-position) 'claude-buffer))
+
+(defun claude-code-dashboard-select ()
+  "Select the Claude instance at point and switch to it."
+  (interactive)
+  (when-let ((buffer (claude-code-dashboard-get-buffer-at-point)))
+    (claude-code--switch-to-claude-buffer buffer)
+    (claude-code-dashboard-quit)))
+
+(defun claude-code-dashboard-preview ()
+  "Preview the Claude instance at point without closing dashboard."
+  (interactive)
+  (when-let ((buffer (claude-code-dashboard-get-buffer-at-point)))
+    (claude-code--switch-to-claude-buffer buffer)))
+
+(defun claude-code-dashboard-kill-instance ()
+  "Kill the Claude instance at point."
+  (interactive)
+  (when-let ((buffer (claude-code-dashboard-get-buffer-at-point)))
+    (when (yes-or-no-p (format "Kill Claude instance %s? " (buffer-name buffer)))
+      (claude-code--kill-buffer buffer)
+      (claude-code-dashboard-refresh))))
+
+(defun claude-code-dashboard-quit ()
+  "Close the Claude dashboard."
+  (interactive)
+  (quit-window t))
+
+(defun claude-code-dashboard-refresh ()
+  "Refresh the Claude dashboard content."
+  (interactive)
+  (claude-code-dashboard))
+
+(defun claude-code--format-dashboard-line (buffer)
+  "Format a dashboard line for BUFFER."
+  (let* ((name (buffer-name buffer))
+         (dir (claude-code--extract-directory-from-buffer-name name))
+         (instance-name (claude-code--extract-instance-name-from-buffer-name name))
+         (project-name (if dir (file-name-nondirectory (directory-file-name dir)) "Unknown"))
+         (status (if (buffer-live-p buffer) "Running" "Dead"))
+         (process (and (buffer-live-p buffer) 
+                       (with-current-buffer buffer (get-buffer-process (current-buffer)))))
+         (process-status (if process (symbol-name (process-status process)) "No Process")))
+    (format "%-20s %-15s %-10s %-12s %s"
+            (or instance-name "default")
+            project-name
+            status
+            process-status
+            (abbreviate-file-name (or dir "")))))
+
+;;;###autoload
+(defun claude-code-dashboard ()
+  "Open Claude Code dashboard to manage all Claude instances."
+  (interactive)
+  (let ((dashboard-buffer (get-buffer-create claude-code-dashboard-buffer-name))
+        (claude-buffers (claude-code--find-all-claude-buffers)))
+    (with-current-buffer dashboard-buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (propertize "Claude Code Dashboard\n" 'face 'header-line))
+        (insert (propertize (make-string 50 ?=) 'face 'shadow))
+        (insert "\n\n")
+        (if claude-buffers
+            (progn
+              (insert (format "%-20s %-15s %-10s %-12s %s\n"
+                              "Instance" "Project" "Status" "Process" "Directory"))
+              (insert (propertize (make-string 80 ?-) 'face 'shadow))
+              (insert "\n")
+              (dolist (buffer claude-buffers)
+                (let ((line-start (point)))
+                  (insert (claude-code--format-dashboard-line buffer))
+                  (insert "\n")
+                  (put-text-property line-start (line-end-position) 'claude-buffer buffer))))
+          (insert (propertize "No Claude instances running." 'face 'warning)))
+        (insert "\n\nKeybindings:")
+        (insert "\n  RET - Select instance")
+        (insert "\n  TAB - Preview instance") 
+        (insert "\n  k   - Kill instance")
+        (insert "\n  r   - Refresh")
+        (insert "\n  q   - Quit")
+        (insert "\n  j/n - Next line")
+        (insert "\n  K/p - Previous line")
+        (goto-char (point-min))
+        (when claude-buffers
+          (forward-line 4)))
+      (claude-code-dashboard-mode)
+      (setq buffer-read-only t))
+    (switch-to-buffer dashboard-buffer)))
 
 ;;;; Mode definition
 ;;;###autoload
