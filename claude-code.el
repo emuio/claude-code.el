@@ -160,6 +160,16 @@ instead of `recenter' and throttles scroll synchronization events."
   :type 'boolean
   :group 'claude-code)
 
+(defcustom claude-code-keep-input-at-bottom t
+  "When non-nil, keep the input area (last few lines) fixed at window bottom.
+
+This prevents the input prompt from scrolling away when the terminal
+buffer updates, ensuring that the command input area is always visible
+at the bottom of the window.  This is especially useful for long-running
+commands or large output that might otherwise push the prompt off-screen."
+  :type 'boolean
+  :group 'claude-code)
+
 ;; Forward declare variables to avoid compilation warnings
 (defvar eat-terminal)
 (defvar eat-term-name)
@@ -517,26 +527,41 @@ possible, preventing the scrolling up issue when editing other buffers."
               (term-beginning (eat-term-display-beginning eat-terminal)))
           ;; Set point first
           (set-window-point window cursor-pos)
-          ;; Check if we should keep the prompt at the bottom
-          (when (and (>= cursor-pos (- (point-max) 2))
-                     (not (pos-visible-in-window-p cursor-pos window)))
-            (if claude-code-optimize-scrolling
-                ;; Use set-window-start to avoid scrolling animation
-                (let ((window-height (window-height window)))
-                  (set-window-start window
-                                   (max term-beginning
-                                        (save-excursion
+          ;; Keep input area at bottom if enabled
+          (let ((window-height (window-height window))
+                (is-near-end (and claude-code-keep-input-at-bottom
+                                  (>= cursor-pos (- (point-max) 10)))))
+            (if is-near-end
+                ;; Cursor is in input area - keep it fixed at bottom
+                (when (not (pos-visible-in-window-p cursor-pos window))
+                  (if claude-code-optimize-scrolling
+                      ;; Use immediate window positioning to avoid scroll animation
+                      (let ((target-start (save-excursion
+                                            (goto-char cursor-pos)
+                                            (forward-line (- window-height 3))
+                                            (line-beginning-position))))
+                        (set-window-start window (max term-beginning target-start) t))
+                    ;; Fallback behavior
+                    (with-selected-window window
+                      (save-excursion
+                        (goto-char cursor-pos)
+                        (recenter -2)))))
+              ;; Cursor not in input area - use original logic
+              (when (and (>= cursor-pos (- (point-max) 2))
+                         (not (pos-visible-in-window-p cursor-pos window)))
+                (if claude-code-optimize-scrolling
+                    (let ((target-start (save-excursion
                                           (goto-char cursor-pos)
                                           (forward-line (- window-height 2))
-                                          (line-beginning-position)))))
-              ;; Original behavior with recenter
-              (with-selected-window window
-                (save-excursion
-                  (goto-char cursor-pos)
-                  (recenter -1)))))
-          ;; Otherwise, only adjust window-start if cursor is not visible
-          (unless (pos-visible-in-window-p cursor-pos window)
-            (set-window-start window term-beginning)))))))
+                                          (line-beginning-position))))
+                      (set-window-start window (max term-beginning target-start)))
+                  (with-selected-window window
+                    (save-excursion
+                      (goto-char cursor-pos)
+                      (recenter -1)))))
+              ;; If cursor is not visible, adjust window-start
+              (unless (pos-visible-in-window-p cursor-pos window)
+                (set-window-start window term-beginning)))))))))
 
 (defvar claude-code--last-sync-time (make-hash-table :test 'eq :weakness 'key)
   "Hash table storing last synchronization time for each Claude buffer.")
