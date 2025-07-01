@@ -1133,7 +1133,8 @@ enter Claude commands."
   (define-key claude-code-dashboard-mode-map (kbd "j") 'next-line)
   (define-key claude-code-dashboard-mode-map (kbd "K") 'previous-line)  ; Use K for up since k is kill
   (define-key claude-code-dashboard-mode-map (kbd "C-n") 'next-line)
-  (define-key claude-code-dashboard-mode-map (kbd "C-p") 'previous-line))
+  (define-key claude-code-dashboard-mode-map (kbd "C-p") 'previous-line)
+  (define-key claude-code-dashboard-mode-map (kbd "g") 'claude-code-dashboard-refresh))
 
 (define-derived-mode claude-code-dashboard-mode fundamental-mode "Claude Dashboard"
   "Major mode for managing Claude instances.
@@ -1179,20 +1180,45 @@ enter Claude commands."
   (interactive)
   (claude-code-dashboard))
 
+(defun claude-code--detect-claude-activity-status (buffer)
+  "Detect Claude's current activity status based on buffer content.
+Safe and fast - only checks last few lines to avoid performance issues."
+  (if (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (save-excursion
+          (condition-case nil
+              (let* ((end-pos (point-max))
+                     (start-pos (max (point-min) (- end-pos 200)))  ; Only last 200 chars
+                     (last-lines (buffer-substring-no-properties start-pos end-pos)))
+                (cond
+                 ;; Look for common Claude prompt patterns at end
+                 ((string-match-p "\\(?:claude\\|➤\\|>\\)\\s-*$" last-lines) "Idle")
+                 ;; Look for thinking/processing indicators
+                 ((string-match-p "\\.\\.\\.$\\|thinking\\|processing" last-lines) "Processing") 
+                 ;; Look for confirmation prompts
+                 ((string-match-p "\\(?:yes\\|no\\|continue\\|proceed\\)\\s-*[?:]\\s-*$" last-lines) "Waiting")
+                 ;; Look for numbered menu options (simplified check)
+                 ((string-match-p "[0-9]+[.):]" last-lines) "Menu")
+                 ;; Default to active if process exists
+                 (t "Active")))
+            ;; If any error occurs, just return "Unknown"
+            (error "Unknown"))))
+    "Dead"))
+
 (defun claude-code--format-dashboard-line (buffer)
   "Format a dashboard line for BUFFER."
   (let* ((name (buffer-name buffer))
          (dir (claude-code--extract-directory-from-buffer-name name))
          (instance-name (claude-code--extract-instance-name-from-buffer-name name))
          (project-name (if dir (file-name-nondirectory (directory-file-name dir)) "Unknown"))
-         (status (if (buffer-live-p buffer) "Running" "Dead"))
+         (claude-status (claude-code--detect-claude-activity-status buffer))
          (process (and (buffer-live-p buffer) 
                        (with-current-buffer buffer (get-buffer-process (current-buffer)))))
          (process-status (if process (symbol-name (process-status process)) "No Process")))
     (format "%-20s %-15s %-10s %-12s %s"
             (or instance-name "default")
             project-name
-            status
+            claude-status
             process-status
             (abbreviate-file-name (or dir "")))))
 
@@ -1211,7 +1237,7 @@ enter Claude commands."
         (if claude-buffers
             (progn
               (insert (format "%-20s %-15s %-10s %-12s %s\n"
-                              "Instance" "Project" "Status" "Process" "Directory"))
+                              "Instance" "Project" "Claude" "Process" "Directory"))
               (insert (propertize (make-string 80 ?-) 'face 'shadow))
               (insert "\n")
               (dolist (buffer claude-buffers)
@@ -1224,7 +1250,7 @@ enter Claude commands."
         (insert "\n  RET - Select instance")
         (insert "\n  TAB - Preview instance") 
         (insert "\n  k   - Kill instance")
-        (insert "\n  r   - Refresh")
+        (insert "\n  r/g - Refresh")
         (insert "\n  q   - Quit")
         (insert "\n  j/n - Next line")
         (insert "\n  K/p - Previous line")
